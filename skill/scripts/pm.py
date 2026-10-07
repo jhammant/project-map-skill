@@ -215,7 +215,7 @@ def with_private_meta(page: str) -> str:
 
 
 def site_dir(slug: str, title: str, page: str, extra: dict[str, str]) -> Path:
-    """A folder ready for any static host: public/ holds the files; hl.json suits hlsite."""
+    """A folder ready for any static host: public/ holds the files; hl.json is title metadata some hosts read."""
     folder = DATA_DIR / "sites" / slug
     if folder.exists():
         shutil.rmtree(folder)
