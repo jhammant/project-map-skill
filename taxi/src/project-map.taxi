@@ -1,7 +1,8 @@
 // The shape of a project map (map.json), so Orbital can answer questions across every
 // project: what's left, what's stuck and what it's waiting on, which calls need you.
 // "projectMaps" is a placeholder host: map it to wherever your maps.json lives in
-// services.conf (pm.py serve locally, or the hosted index URL that pm.py publish prints).
+// services.conf: ideally a host root such as pm.py serve, because some Orbital builds keep only
+// the host of a services.conf URL (the open-source build keeps a path too).
 
 import taxi.http.HttpOperation
 

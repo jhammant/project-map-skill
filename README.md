@@ -126,6 +126,8 @@ find { projectmap.ProjectMap[] } as {
 
 Both schemas call placeholder hosts (`projectMaps`, `githubApi`) that each Orbital maps to real URLs in `services.conf`, so nothing private lives in the schema.
 
+Point `projectMaps` at a host root: `pm.py serve` (`http://host.docker.internal:9733` from Docker) or a host that serves `maps.json` at `/maps.json`. The open-source Orbital keeps a path in a `services.conf` URL, but some commercial builds keep only the host, so a URL like `https://example.com/maps-<token>` silently reads the wrong page there. `pm.py serve` runs well as a login item or daemon.
+
 **Try it locally:**
 
 ```bash
