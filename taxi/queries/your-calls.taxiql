@@ -1,0 +1,8 @@
+// Open decisions in every project, with the default each will go ahead with.
+find { projectmap.ProjectMap[] } as {
+  project : projectmap.ProjectName
+  needsYou : projectmap.MapDecision[].filter((projectmap.DecisionStatus) -> projectmap.DecisionStatus == "open") as {
+    question : projectmap.DecisionQuestion
+    goingWith : projectmap.DefaultChoice
+  }[]
+}[]

@@ -1,0 +1,69 @@
+// The shape of a project map (map.json), so Orbital can answer questions across every
+// project: what's left, what's stuck and what it's waiting on, which calls need you.
+// "projectMaps" is a placeholder host: map it to wherever your maps.json lives in
+// services.conf (pm.py serve locally, or the hosted index URL that pm.py publish prints).
+
+import taxi.http.HttpOperation
+
+namespace projectmap
+
+type ProjectName inherits String
+type MapDrawnAt inherits Instant
+type CommitSha inherits String
+type MapUrl inherits String
+type MilestoneName inherits String
+type ItemsLeft inherits Int
+type NextStepText inherits String
+type NextStepWhy inherits String
+type PartId inherits String
+type PartName inherits String
+type PartStatus inherits String        // done, in-progress, not-started or stuck
+type ItemsDone inherits Int
+type ItemsTotal inherits Int
+type PartSummary inherits String
+type WaitingOn inherits String
+type DecisionQuestion inherits String
+type DefaultChoice inherits String
+type DecisionStatus inherits String    // open or decided
+
+model NextMilestone {
+  name : MilestoneName
+  left : ItemsLeft
+}
+
+model NextStep {
+  text : NextStepText
+  why : NextStepWhy
+}
+
+model MapPart {
+  id : PartId
+  name : PartName
+  status : PartStatus
+  done : ItemsDone
+  total : ItemsTotal
+  summary : PartSummary
+  waitingOn : WaitingOn?
+}
+
+model MapDecision {
+  question : DecisionQuestion
+  defaultChoice : DefaultChoice
+  status : DecisionStatus
+}
+
+model ProjectMap {
+  project : ProjectName
+  generatedAt : MapDrawnAt
+  commit : CommitSha
+  url : MapUrl?
+  nextMilestone : NextMilestone
+  nextStep : NextStep
+  parts : MapPart[]
+  decisions : MapDecision[]
+}
+
+service ProjectMapService {
+  @HttpOperation(method = "GET", url = "http://projectMaps/maps.json")
+  operation listProjectMaps() : ProjectMap[]
+}

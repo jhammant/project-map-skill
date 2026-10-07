@@ -1,0 +1,25 @@
+# A local Orbital that loads ../../taxi (project-map.taxi + github.taxi), so you can
+# query every project map with TaxiQL and let the project-map agent read GitHub
+# through Orbital. Start `pm.py serve --host 0.0.0.0` first, then:
+#   docker compose up -d        # Orbital at http://localhost:${ORBITAL_PORT:-9022}
+name: project-map-orbital
+services:
+  db:
+    image: postgres:15
+    environment: { POSTGRES_DB: orbital, POSTGRES_USER: orbital, POSTGRES_PASSWORD: changeme }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U orbital -d orbital"], interval: 5s, retries: 30 }
+  orbital:
+    image: orbitalhq/orbital:next
+    environment:
+      JAVA_OPTS: "-XX:MaxRAMPercentage=25.0"
+      OPTIONS: >-
+        --vyne.app.data.path=/opt/service/config
+        --vyne.db.username=orbital --vyne.db.password=changeme --vyne.db.host=db
+        --vyne.workspace.config-file=/opt/service/workspace.conf
+    ports: [ "127.0.0.1:${ORBITAL_PORT:-9022}:9022" ]
+    extra_hosts: [ "host.docker.internal:host-gateway" ]
+    volumes:
+      - ../../taxi:/opt/service/taxi:ro
+      - ./workspace.conf:/opt/service/workspace.conf:ro
+      - ./config/services.conf:/opt/service/config/services.conf:ro
+    depends_on: { db: { condition: service_healthy } }

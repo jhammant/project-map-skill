@@ -1,0 +1,7 @@
+// Every project: the next milestone, how much is left, and the suggested next step.
+find { projectmap.ProjectMap[] } as {
+  project : projectmap.ProjectName
+  milestone : projectmap.MilestoneName
+  left : projectmap.ItemsLeft
+  nextStep : projectmap.NextStepText
+}[]

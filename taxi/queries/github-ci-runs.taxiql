@@ -1,0 +1,9 @@
+// The latest GitHub Actions runs. Needs: given owner and repo.
+find { github.WorkflowRuns } as github.WorkflowRun[] as {
+  name : github.RunName
+  status : github.RunStatus
+  conclusion : github.RunConclusion
+  sha : github.RunSha
+  url : github.RunUrl
+  createdAt : github.RunCreatedAt
+}[]

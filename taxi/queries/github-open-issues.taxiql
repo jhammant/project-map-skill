@@ -1,0 +1,8 @@
+// Open issues (GitHub includes pull requests here). Needs: given owner and repo.
+find { github.Issue[] } as {
+  number : github.IssueNumber
+  title : github.IssueTitle
+  url : github.IssueUrl
+  author : github.IssueAuthor
+  updatedAt : github.IssueUpdatedAt
+}[]

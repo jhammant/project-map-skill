@@ -1,0 +1,21 @@
+{
+  "project": "demo-api",
+  "generatedAt": "2026-10-07T06:30:00Z",
+  "commit": "a1b2c3d",
+  "branch": "main",
+  "mode": "update",
+  "nextMilestone": {"name": "Public beta", "left": 3, "items": ["Rate limiting on search", "Billing webhooks", "Status page"]},
+  "nextStep": {"text": "Finish rate limiting on the search endpoint", "why": "Last item blocking the beta checklist"},
+  "parts": [
+    {"id": "auth", "name": "Auth", "status": "done", "done": 6, "total": 6, "summary": "Login, tokens and refresh all tested",
+     "evidence": ["tests/test_auth.py: 24 pass"], "waitingOn": null, "changed": false},
+    {"id": "search", "name": "Search API", "status": "in-progress", "done": 4, "total": 6, "summary": "Rate limiting left",
+     "evidence": ["commit a1b2c3d"], "waitingOn": null, "changed": true},
+    {"id": "billing", "name": "Billing", "status": "stuck", "done": 1, "total": 5, "summary": "Webhook design open",
+     "evidence": ["issue #12"], "waitingOn": "Your call: monthly or annual plans first", "changed": false}
+  ],
+  "decisions": [{"id": "plans", "question": "Monthly or annual plans first?", "options": ["Monthly", "Annual"],
+                 "defaultChoice": "Monthly", "status": "open", "answer": null}],
+  "milestones": [{"name": "Public beta", "status": "current", "proposed": false}],
+  "panels": []
+}

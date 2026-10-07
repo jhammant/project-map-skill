@@ -1,0 +1,11 @@
+{
+  "publish": {
+    "command": null,
+    "url": null,
+    "remove": null,
+    "prefix": "map"
+  },
+  "orbital": {
+    "url": null
+  }
+}

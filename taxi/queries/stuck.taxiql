@@ -1,0 +1,8 @@
+// Everything stuck, in every project, and what it's waiting on.
+find { projectmap.ProjectMap[] } as {
+  project : projectmap.ProjectName
+  stuck : projectmap.MapPart[].filter((projectmap.PartStatus) -> projectmap.PartStatus == "stuck") as {
+    part : projectmap.PartName
+    waitingOn : projectmap.WaitingOn
+  }[]
+}[]
