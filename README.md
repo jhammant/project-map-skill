@@ -122,6 +122,8 @@ find { projectmap.ProjectMap[] } as {
 }[]
 ```
 
+Each map in `maps.json` also says which folder it is (`folder`, typed `projectmap.ProjectFolder`), the name other tools know the project by even when the map has its own title. A schema that takes a folder name can then join straight onto your maps: [Retrace](https://github.com/jhammant/retrace)'s, for instance, adds your hands-on time per project.
+
 **Using: `github.taxi`** describes GitHub issues and Actions runs. The agent runs `pm.py github OWNER/REPO`, which asks Orbital first and falls back to the `gh` CLI; its `source` field says which answered. Any other issue tracker or CI system with a Taxi schema can feed the map the same way, without changing the agent.
 
 Both schemas call placeholder hosts (`projectMaps`, `githubApi`) that each Orbital maps to real URLs in `services.conf`, so nothing private lives in the schema.

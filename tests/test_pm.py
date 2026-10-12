@@ -97,6 +97,7 @@ def test_local_publish_builds_the_registry_without_hosting(pm, project):
     assert "url" not in result
     registry = json.loads((pm.DATA_DIR / "maps.json").read_text())
     assert [m["project"] for m in registry] == ["demo-api"]
+    assert registry[0]["folder"] == project.name, "maps say which folder they are, for tools that know it by that"
     assert "Public beta" in (pm.DATA_DIR / "index.html").read_text()
 
 

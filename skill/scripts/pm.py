@@ -272,6 +272,24 @@ def index_page(maps: list[dict]) -> str:
             "(the shape project-map.taxi describes).</p></body></html>")
 
 
+def write_registry(links: dict) -> list[dict]:
+    """Every project's latest map in one maps.json, the file project-map.taxi reads.
+
+    Each map also gets its folder's name, which other tools (Claude Code, Retrace) know the project by.
+    """
+    folders = {pid: Path(e["path"]).name for pid, e in links.get("projects", {}).items() if e.get("path")}
+    everything = []
+    for path in (DATA_DIR / "maps").glob("*.json"):
+        m = json.loads(path.read_text())
+        if folders.get(path.stem):
+            m["folder"] = folders[path.stem]
+        everything.append(m)
+    everything.sort(key=lambda m: m.get("project", ""))
+    (DATA_DIR / "maps.json").write_text(json.dumps(everything, indent=1))
+    (DATA_DIR / "index.html").write_text(index_page(everything))
+    return everything
+
+
 def publish(root_arg: str, rotate: bool = False, dry_run: bool = False) -> dict:
     config = load_config()
     root, name = project_root(root_arg)
@@ -298,14 +316,10 @@ def publish(root_arg: str, rotate: bool = False, dry_run: bool = False) -> dict:
             else:
                 subprocess.run(fill(config["publish"]["remove"], slug=old_slug), capture_output=True)
 
-    # The registry: every project's latest map in one maps.json, the file project-map.taxi reads.
     maps_dir = DATA_DIR / "maps"
     maps_dir.mkdir(parents=True, exist_ok=True)
     (maps_dir / f"{pid}.json").write_text(json.dumps(data, indent=1))
-    everything = sorted((json.loads(p.read_text()) for p in maps_dir.glob("*.json")),
-                        key=lambda m: m.get("project", ""))
-    (DATA_DIR / "maps.json").write_text(json.dumps(everything, indent=1))
-    (DATA_DIR / "index.html").write_text(index_page(everything))
+    everything = write_registry(links)
     result["registry"] = str(DATA_DIR / "maps.json")
 
     if hosted:

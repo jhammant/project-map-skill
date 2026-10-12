@@ -9,6 +9,7 @@ import taxi.http.HttpOperation
 namespace projectmap
 
 type ProjectName inherits String
+type ProjectFolder inherits String     // the folder's name (~/dev/acme is "acme"), which other tools know it by
 type MapDrawnAt inherits Instant
 type CommitSha inherits String
 type MapUrl inherits String
@@ -55,6 +56,7 @@ model MapDecision {
 
 model ProjectMap {
   project : ProjectName
+  folder : ProjectFolder?
   generatedAt : MapDrawnAt
   commit : CommitSha
   url : MapUrl?
