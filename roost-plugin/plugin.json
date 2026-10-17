@@ -1,0 +1,9 @@
+{
+  "id": "project-map",
+  "name": "Maps",
+  "description": "Your project maps and the supermap: what needs you, what could be lost, what went quiet, and every running Claude window, each with actions",
+  "version": "0.1.0",
+  "command": ["/usr/bin/python3", "./roost_plugin.py"],
+  "interval": 60,
+  "timeout": 15
+}

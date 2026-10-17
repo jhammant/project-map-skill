@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install /map and the project-map subagent into ~/.claude.
+# Install /map, /supermap and the project-map subagent into ~/.claude.
 #   ./install.sh                     link the skill, write the agent, create the config
 #   PROJECT_MAP_SKILLS="frontend-design:frontend-design,dataviz" ./install.sh
 #                                    choose the design skills the agent preloads
@@ -12,12 +12,15 @@ AGENTS="${CLAUDE_AGENTS_DIR:-$HOME/.claude/agents}"
 CONFIG="${PROJECT_MAP_CONFIG_DIR:-$HOME/.config/project-map}"
 mkdir -p "$SKILLS" "$AGENTS"
 
-if [ -e "$SKILLS/map" ] && [ ! -L "$SKILLS/map" ]; then
-  echo "skip: $SKILLS/map exists and is not a symlink" >&2
-else
-  ln -sfn "$HERE/skill" "$SKILLS/map"
-  echo "linked $SKILLS/map"
-fi
+for pair in "map:skill" "supermap:supermap"; do
+  name="${pair%%:*}" source="$HERE/${pair#*:}"
+  if [ -e "$SKILLS/$name" ] && [ ! -L "$SKILLS/$name" ]; then
+    echo "skip: $SKILLS/$name exists and is not a symlink" >&2
+  else
+    ln -sfn "$source" "$SKILLS/$name"
+    echo "linked $SKILLS/$name"
+  fi
+done
 
 # Design skills to preload: whatever is installed, unless PROJECT_MAP_SKILLS says otherwise.
 if [ -n "${PROJECT_MAP_SKILLS+set}" ]; then
@@ -40,9 +43,14 @@ open(target, "w").write(text)
 PY
 echo "wrote $AGENTS/project-map.md (preloads: ${preload:-none})"
 
+# The Roost menu-bar plugin, if Roost is set up here (https://github.com/jhammant/roost)
+if [ -d "$HOME/.config/roost/plugins" ] && [ ! -e "$HOME/.config/roost/plugins/project-map" ]; then
+  ln -s "$HERE/roost-plugin" "$HOME/.config/roost/plugins/project-map" && echo "linked the Maps plugin into Roost"
+fi
+
 if [ ! -e "$CONFIG/config.json" ]; then
   mkdir -p "$CONFIG" && chmod 700 "$CONFIG"
   cp "$HERE/config.example.json" "$CONFIG/config.json" && chmod 600 "$CONFIG/config.json"
   echo "created $CONFIG/config.json (maps stay local until you set publish.command)"
 fi
-echo "Done. Start a new Claude Code session and type /map."
+echo "Done. Start a new Claude Code session and type /map (one project) or /supermap (all of them)."

@@ -29,6 +29,7 @@ jobs:
           export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
           ./install.sh
           test -L "$HOME/.claude/skills/map"
+          test -L "$HOME/.claude/skills/supermap"
           grep -q '^name: project-map' "$HOME/.claude/agents/project-map.md"
           ! grep -q '{{SKILLS}}' "$HOME/.claude/agents/project-map.md"
           test -f "$HOME/.config/project-map/config.json"

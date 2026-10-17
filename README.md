@@ -39,7 +39,7 @@ flowchart LR
 
 ## Install
 
-You need Claude Code 2.1 or later, Python 3.9+ and git. `gh` (issues and CI without Orbital), Chrome (the agent checks its own map at phone and laptop width) and Docker (the Orbital demo) are optional.
+You need Claude Code 2.1 or later, Python 3.9+ and git (2.32+ for the tests). `gh` (issues and CI without Orbital), Chrome (the agent checks its own map at phone and laptop width) and Docker (the Orbital demo) are optional.
 
 ```bash
 git clone https://github.com/jhammant/project-map-skill.git
@@ -47,7 +47,7 @@ cd project-map-skill
 ./install.sh
 ```
 
-`install.sh` links the `/map` skill into `~/.claude/skills/map`, writes the `project-map` agent to `~/.claude/agents/`, and creates `~/.config/project-map/config.json`. The agent preloads whichever design skills you have installed (`frontend-design`, `impeccable`); choose them yourself with `PROJECT_MAP_SKILLS="frontend-design:frontend-design,dataviz" ./install.sh`. Re-run it after a `git pull`. Start a new Claude Code session so it picks up the agent.
+`install.sh` links the `/map` and `/supermap` skills into `~/.claude/skills/`, writes the `project-map` agent to `~/.claude/agents/`, and creates `~/.config/project-map/config.json`. The agent preloads whichever design skills you have installed (`frontend-design`, `impeccable`); choose them yourself with `PROJECT_MAP_SKILLS="frontend-design:frontend-design,dataviz" ./install.sh`. Re-run it after a `git pull`. Start a new Claude Code session so it picks up the agent.
 
 It installs as files rather than as a plugin on purpose: plugin subagents ignore hooks, and the write guard below is a hook.
 
@@ -70,6 +70,53 @@ To make Claude do this on its own, add this to `~/.claude/CLAUDE.md`:
 - When I ask "where are we?" or "what's left?", answer from the map, not from memory.
 - Follow the map's suggested next step. Put anything that needs my call in the map's "Your call" panel with a default; if I don't answer, go ahead with the default and say so in the next update.
 ```
+
+## /supermap: a map of all your maps
+
+One map per project answers "where are we?". It doesn't answer "what have I dropped?", because the work you've lost track of is mostly in projects that never got a map. `/supermap` scans everything on the machine: every `.project-map/` (registered or not), every git repo under your project folders, and your interactive Claude Code sessions. It then writes one page with these views:
+
+| View | What's in it |
+|---|---|
+| **Needs you** | Open "Your call" questions on every map, parts stuck waiting on you, sessions that ended on a question to you. |
+| **At risk** | Work that could be lost for good, worst first: never committed; uncommitted and untouched for a day or more (worse with no remote); commits on no remote; old stashes; work in temp folders; a registered map whose folder has gone. |
+| **Gone quiet** | Projects you worked on this month, then left with something still open. |
+| **By project** | Everything, grouped by area (the folder under your root), each with its map, git state and last session. |
+| **By day** | A project × day grid of commits, sessions and map draws, plus a list per day. A row that goes dark is a project you stopped. |
+| **Unmapped** | Projects with 4 or more active days in the window and no map. |
+
+```text
+/supermap                    scan (about 2 s), open the page, summarise what needs you
+/supermap restart toybox     new terminal tab, fresh claude primed with a restart brief
+/supermap resume toybox      new terminal tab, claude --resume on the last session there
+/supermap calls              ask the open calls from every map, write your answers into each plan.md
+/supermap park toybox        stop it counting as quiet (it stays in At risk)
+```
+
+### In the menu bar
+
+With [Roost](https://github.com/jhammant/roost) set up, `install.sh` adds a **Maps** menu:
+- the supermap's counts;
+- **Running now**: every Claude window, named by its project, with what needs you and what's at risk there;
+- **Needs you**, **At risk** and **Gone quiet**;
+- **All maps**.
+
+Every project opens a submenu with Bring to front, Open its map, Restart fresh in a new tab, Resume its last session, Open the folder, Park for two weeks and Mark done (park and done ask first). The badge is amber with what needs you, and red only when something new is at risk since the last day on record. A refresh reads `supermap.json`, ps and lsof, about 1 s, and starts a background rescan when the data is over an hour old.
+
+### What it counts
+
+- **Only your work.** Commits count only when the author is one of your git emails or names, so clones of other people's busy repos don't flood the page. A session counts only if you typed into it: `claude -p` runs, the Agent SDK and scheduled jobs are skipped (on the author's machine they were 1,383 of 1,471 recent transcripts). A session is credited to the repos whose files it edited, not to the folder it started in, so work started from `~/dev` lands on the right project.
+- **How sessions ended.** The last record of each transcript says whether Claude finished, asked you something you never answered, or died mid-tool.
+- **Restart briefs.** For each project: the map's next step, stuck parts and open calls, uncommitted files, unpushed commits, stashes, recent commit subjects, the last session's title and last words, and STATE.md. A fresh session starts with what it needs and doesn't have to ask you.
+
+### "Gone quiet" comes from your own history
+
+How many days of silence should count as "gone quiet"? `pm.py super learn` measures it from your own commits (each repo once; worktrees share its history). It looks at the latest complete weeks and finds the first quiet day after which your projects more often stayed quiet than came back within two weeks. On the author's machine (1,393 quiet spells in 316 repos) that was 3 days: of the 113 recent projects that went 3 days without a commit, 47% came back.
+
+The number doesn't transfer between months. A fit on August said 1 day, but 59% of the following weeks' 1-day spells resumed. So the daily scan refits it, and a forward check scores each day's "quiet" calls against what actually happened two weeks later.
+
+### Daily, and on your phone
+
+Run `pm.py super --learn --publish --quiet` once a day (cron, launchd or any scheduler). It refits the threshold, snapshots each project (the page's "since yesterday" list comes from these), writes `nudge.json` (one item per slipping project, for a daily review to pick up) and, if you configured hosting, refreshes a **redacted** copy at an unguessable link. The redacted copy carries no map text (questions, next steps, part names; some maps are kept local on purpose, and a local-only map shows by its folder name, not its title), file paths, session titles, last words, git branch names, commit subjects or commands; the tests check that. It keeps project names, what's at risk, counts (items left, open calls) and each hosted map's own link.
 
 ## Hosting with unguessable links (optional)
 
@@ -156,12 +203,13 @@ For private repositories, give Orbital a GitHub token through its authentication
 | `<project>/.project-map/log.md` | One line per map: when, why, what changed. |
 | `~/.config/project-map/config.json` | `publish` (command, remove, url, prefix) and `orbital.url`. |
 | `~/.local/share/project-map/maps.json` | Every project's latest map, for `where --all` and Orbital. |
+| `~/.local/share/project-map/super/` | The supermap (mode 0700): `supermap.html`, `supermap.json`, `nudge.json`, restart briefs, and `super.db` (sqlite: cached git state and parsed sessions, daily snapshots, parks, answers). |
 | `~/.claude/agent-memory/project-map/` | Your style and what the agent learned about each project. |
 
 ## Development
 
 ```bash
-python3 -m pytest -q tests     # 17 tests; the preview test needs Chrome and skips without it
+python3 -m pytest -q tests     # 34 tests; the preview test needs Chrome and skips without it
 ```
 
 ## Credits

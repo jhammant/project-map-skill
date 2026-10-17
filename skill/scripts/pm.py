@@ -4,9 +4,9 @@
   pm.py root [PATH]              the project root and its map id, as JSON
   pm.py guard                    PreToolUse hook: Write/Edit only inside .project-map/ (stdin: hook JSON)
   pm.py check ROOT               validate ROOT/.project-map/map.json against the map contract
-  pm.py publish ROOT [--rotate] [--dry-run]
-                                 add the map to the local registry and, if configured, publish it
-                                 at an unguessable URL
+  pm.py publish ROOT [--rotate] [--dry-run] [--local]
+                                 add the map to the local registry and, if configured (and not
+                                 --local), publish it at an unguessable URL
   pm.py preview ROOT             render the map in headless Chrome at phone (390 px) and laptop width:
                                  screenshots to look at, and any sideways overflow measured
   pm.py link [ROOT]              the project's hosted map URL and the all-projects index URL
@@ -15,6 +15,7 @@
   pm.py orbital QUERY [--given NAME=TYPE:VALUE ...]
                                  run a TaxiQL query (a file or a name in taxi/queries) against Orbital
   pm.py serve [--port 9733]      serve the registry's maps.json so a local Orbital can read it
+  pm.py super ...                the supermap: every project's map, lost work and restarts (supermap.py)
 
 Standard library only. Config: ~/.config/project-map/config.json. Registry: ~/.local/share/project-map/.
 """
@@ -35,7 +36,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 
@@ -290,14 +291,14 @@ def write_registry(links: dict) -> list[dict]:
     return everything
 
 
-def publish(root_arg: str, rotate: bool = False, dry_run: bool = False) -> dict:
+def publish(root_arg: str, rotate: bool = False, dry_run: bool = False, local: bool = False) -> dict:
     config = load_config()
     root, name = project_root(root_arg)
     data = read_map(root)
     links = load_links()
     pid = map_id(root, name, links)
     entry = links.setdefault("projects", {}).setdefault(pid, {"path": str(root)})
-    hosted = bool(config.get("publish", {}).get("command"))
+    hosted = bool(config.get("publish", {}).get("command")) and not local
     result = {"id": pid, "local": str(root / ".project-map" / "index.html")}
 
     if hosted:
@@ -359,14 +360,19 @@ def chrome() -> str | None:
 
 def preview(root_arg: str) -> dict:
     """Screenshots at phone (390 px) and laptop (1280 px) width, and any sideways overflow in px."""
-    browser = chrome()
-    if not browser:
-        raise Fail("No Chrome or Chromium found, so the map can't be previewed here")
     root, _ = project_root(root_arg)
-    folder = root / ".project-map"
-    page = folder / "index.html"
+    page = root / ".project-map" / "index.html"
     if not page.exists():
         raise Fail(f"No map yet: {page} does not exist")
+    return preview_page(page)
+
+
+def preview_page(page: Path) -> dict:
+    """preview() for any page: the screenshots land next to it."""
+    browser = chrome()
+    if not browser:
+        raise Fail("No Chrome or Chromium found, so the page can't be previewed here")
+    folder = page.parent
     text = page.read_text()
     probe = folder / ".preview-probe.html"
     probe.write_text(text.replace("</body>", REPORT + "</body>") if "</body>" in text else text + REPORT)
@@ -378,7 +384,7 @@ def preview(root_arg: str) -> dict:
             common = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
                       "--allow-file-access-from-files", f"--window-size={max(width, 500)},2400",
                       "--virtual-time-budget=5000"]
-            shot = folder / f"preview-{label}.png"
+            shot = folder / f"preview-{label}.png" if page.name == "index.html" else folder / f"{page.stem}-{label}.png"
             # Framed pages paint oddly in a screenshot, so shoot the page itself at the narrowest
             # width Chrome allows (500 px, still phone layout below the usual 600 px breakpoints).
             shoot = common[:-2] + [f"--window-size={max(width, 500)},2400", "--virtual-time-budget=5000"]
@@ -511,6 +517,27 @@ def where(root_arg: str, everything: bool) -> str:
 
 # ---------------------------------------------------------------- cli
 
+class _Live:
+    """This module's globals as attributes, read when used, for a copy loaded outside sys.modules."""
+
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+def load_supermap():
+    """supermap.py, next to this file, bound to this module's config, registry and hosting."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("supermap", Path(__file__).resolve().with_name("supermap.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    this = sys.modules.get(__name__)
+    module.bind(this if getattr(this, "load_supermap", None) is load_supermap else _Live())
+    return module
+
+
 def serve(port: int, host: str) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(DATA_DIR))
@@ -519,6 +546,13 @@ def serve(port: int, host: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["super"]:  # its own options, which argparse.REMAINDER would drop when they come first
+        try:
+            return load_supermap().main(argv[1:])
+        except Fail as problem:
+            print(f"pm.py: {problem}", file=sys.stderr)
+            return 1
     parser = argparse.ArgumentParser(prog="pm.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("root").add_argument("path", nargs="?", default=".")
@@ -528,6 +562,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("root")
     p.add_argument("--rotate", action="store_true", help="replace the project's secret link")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--local", action="store_true", help="register it for where --all and Orbital, but don't host it")
     sub.add_parser("preview").add_argument("root")
     sub.add_parser("link").add_argument("root", nargs="?", default=".")
     p = sub.add_parser("where")
@@ -537,6 +572,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("orbital")
     p.add_argument("query")
     p.add_argument("--given", action="append", default=[], help="NAME=TYPE:VALUE")
+    p = sub.add_parser("super", add_help=False, help="the supermap (pm.py super --help)")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("serve")
     p.add_argument("--port", type=int, default=9733)
     p.add_argument("--host", default="127.0.0.1")
@@ -552,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
             read_map(root)
             print("map.json meets the contract")
         elif args.command == "publish":
-            print(json.dumps(publish(args.root, args.rotate, args.dry_run), indent=1))
+            print(json.dumps(publish(args.root, args.rotate, args.dry_run, args.local), indent=1))
         elif args.command == "preview":
             print(json.dumps(preview(args.root), indent=1))
         elif args.command == "link":
