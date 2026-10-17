@@ -189,3 +189,18 @@ def test_preview_measures_overflow_at_phone_width(pm, project):
     assert result["laptop"]["overflow_px"] == 0
     assert Path(result["phone"]["screenshot"]).exists()
     assert not list((project / ".project-map").glob(".preview-*.html")), "temporary files are cleaned up"
+
+
+def test_a_local_map_never_reaches_the_hosted_index(pm, project, tmp_path):
+    write_config(pm, tmp_path)
+    secret = tmp_path / "secret-plan"
+    (secret / ".project-map").mkdir(parents=True)
+    (secret / ".project-map" / "map.json").write_text(json.dumps(dict(SAMPLE, project="secret-plan")))
+    (secret / ".project-map" / "index.html").write_text("<!doctype html><title>s</title>")
+    local = pm.publish(str(secret), local=True)
+    assert "url" not in local
+    hosted = pm.publish(str(project))
+    index_slug = hosted["index_url"].split("/")[-2]
+    shared = (pm.DATA_DIR / "sites" / index_slug / "public" / "maps.json").read_text()
+    assert "demo-api" in shared and "secret-plan" not in shared
+    assert "secret-plan" in (pm.DATA_DIR / "maps.json").read_text(), "it stays in the local registry"

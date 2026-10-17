@@ -105,6 +105,7 @@ Every project opens a submenu with Bring to front, Open its map, Restart fresh i
 ### What it counts
 
 - **Only your work.** Commits count only when the author is one of your git emails or names, so clones of other people's busy repos don't flood the page. A session counts only if you typed into it: `claude -p` runs, the Agent SDK and scheduled jobs are skipped (on the author's machine they were 1,383 of 1,471 recent transcripts). A session is credited to the repos whose files it edited, not to the folder it started in, so work started from `~/dev` lands on the right project.
+- **Deleted folders.** If a repo it knew disappears, it checks whether any repo still here has its commits. It flags the deletion only when work of yours went with it (commits nowhere else, uncommitted files), and keeps the flag for the window. A copy of a repo that still exists is only a note.
 - **How sessions ended.** The last record of each transcript says whether Claude finished, asked you something you never answered, or died mid-tool.
 - **Restart briefs.** For each project: the map's next step, stuck parts and open calls, uncommitted files, unpushed commits, stashes, recent commit subjects, the last session's title and last words, and STATE.md. A fresh session starts with what it needs and doesn't have to ask you.
 
@@ -113,6 +114,17 @@ Every project opens a submenu with Bring to front, Open its map, Restart fresh i
 How many days of silence should count as "gone quiet"? `pm.py super learn` measures it from your own commits (each repo once; worktrees share its history). It looks at the latest complete weeks and finds the first quiet day after which your projects more often stayed quiet than came back within two weeks. On the author's machine (1,393 quiet spells in 316 repos) that was 3 days: of the 113 recent projects that went 3 days without a commit, 47% came back.
 
 The number doesn't transfer between months. A fit on August said 1 day, but 59% of the following weeks' 1-day spells resumed. So the daily scan refits it, and a forward check scores each day's "quiet" calls against what actually happened two weeks later.
+
+### The full map on your phone
+
+`pm.py super serve` serves the full page, live, to you alone. It binds 127.0.0.1 and you publish it on your tailnet with `tailscale serve --bg --https=8794 http://127.0.0.1:8794`. A request gets in only with your tailnet login (Tailscale adds it) or straight from the Mac. Funnel, other logins, tagged devices and pages that rebind a domain onto the port get 403.
+
+On the live page the buttons act instead of copying commands:
+- Restart and Resume open a tab on the Mac.
+- Park, Done and Rescan work as on the Mac.
+- An open call can be answered right on its card, and the answer is written into that project's plan.md.
+
+Every action needs a token that the server puts in the page at startup, so other sites can't trigger them. Each project's own map is at `/maps/<id>/`.
 
 ### Daily, and on your phone
 
@@ -209,7 +221,7 @@ For private repositories, give Orbital a GitHub token through its authentication
 ## Development
 
 ```bash
-python3 -m pytest -q tests     # 34 tests; the preview test needs Chrome and skips without it
+python3 -m pytest -q tests     # 37 tests; the preview test needs Chrome and skips without it
 ```
 
 ## Credits

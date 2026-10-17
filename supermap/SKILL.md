@@ -41,6 +41,11 @@ For each answer, run `PM super answer <project> <decision> "<answer>"`. It fills
 ## Publish
 `PM super publish` puts a redacted copy at an unguessable link, using the publish command in `~/.config/project-map/config.json`. The copy has no map text (questions, next steps, part names), file paths, session titles, session last words, git branch names, commit subjects or commands: counts, what's at risk and each hosted map's own link only. `--rotate` replaces the link. When you share the link, say the copy is redacted and that it still opens every hosted map, so it should be treated like a password.
 
+## On your phone
+`PM super serve` (port 8794) serves the full, live page for you alone, published on your tailnet with `tailscale serve --bg --https=8794 http://127.0.0.1:8794`. It runs as the loom daemon `supermap-serve`. Only your tailnet login gets in, or a direct request from the Mac. Funnel, other logins, tagged devices and foreign hostnames get 403.
+
+On the live page the buttons act instead of copying commands: Restart and Resume open a tab on the Mac, and Park, Done and Rescan work too. Open calls can be answered on the card, and the answer goes into that project's plan.md. Each project's own map is at `/maps/<id>/`. When the Mac sleeps, the page is unreachable.
+
 ## Daily
 A daily job runs `PM super --learn --publish --quiet` before the day review. Each run:
 - refits "gone quiet" from the latest complete weeks of your own commits;

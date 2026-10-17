@@ -22,6 +22,8 @@ has gone quiet; writes one self-contained page; restarts any project in one step
   pm.py super nudge                what slipped, as JSON, for a daily review
   pm.py super learn                set "gone quiet" from your own commit history
   pm.py super preview              screenshots at phone and laptop width
+  pm.py super serve [--port 8794]  the full, live page for you alone on your tailnet (tailscale serve),
+                                   with working buttons, so it can be used from your phone
 
 Standard library only. Data: ~/.local/share/project-map/super/ (mode 0700).
 """
@@ -29,6 +31,10 @@ from __future__ import annotations
 
 import argparse
 import collections
+import http.server
+import secrets
+import threading
+import urllib.parse
 import datetime as dt
 import difflib
 import fnmatch
@@ -165,7 +171,9 @@ def discover(db, cfg: dict, rescan: bool) -> tuple[list[str], list[str]]:
     key = [str(r) for r in cfg["roots"]] + [cfg["depth"]]
     cached = meta(db, "walk")
     if cached and not rescan and cached["key"] == key and time.time() - cached["at"] < WALK_TTL:
-        repos, maps = cached["repos"], cached["maps"]
+        # a cached walk still notices folders deleted since
+        repos = [r for r in cached["repos"] if os.path.isdir(r)]
+        maps = [m for m in cached["maps"] if os.path.isdir(m)]
     else:
         repos, maps = walk(cfg["roots"], cfg["depth"])
         set_meta(db, "walk", {"key": key, "at": time.time(), "repos": repos, "maps": maps})
@@ -662,6 +670,17 @@ def flags_for(p: dict, quiet_days: int, now: float) -> list[dict]:
     changed = g.get("dirty", 0) + g.get("untracked", 0)
     local_only = g and not g.get("remote") and not p.get("sub")
     recent = p["activeDays"] > 0  # you worked on it inside the window
+    if p.get("deleted"):
+        what = []
+        if p.get("lostCommits"):
+            what.append(plural(p["lostCommits"], "commit") + " that no repo here has")
+        if p.get("lostChanges"):
+            what.append(plural(p["lostChanges"], "uncommitted file"))
+        copy = p.get("copyOf")
+        add("risk", "deleted", 3 if p.get("lostCommits") else 1 if copy else 2,
+            f"folder deleted {fmt_age((now - p['deleted']) / 3600)} ago, with " + " and ".join(what)
+            + (f" (a copy of {tilde(copy)}, which is still here)" if copy else ""),
+            "if it mattered, look in Time Machine or the Trash; if not, mark it done")
     if p.get("missing"):
         add("risk", "missing", 2, "registered map's folder is gone" + (f"; a folder with this name is at {p['movedTo']}" if p.get("movedTo") else ""),
             "run pm.py publish in its new folder, or drop it from links.json")
@@ -741,7 +760,9 @@ def fmt_age(hours: float) -> str:
 
 
 def build(cfg: dict, tops: list[str], map_roots: list[str], states: dict, maps: dict, sessions: list[dict],
-          links: dict, marks: dict, answers: dict, quiet_days: int, now: float, since: float) -> list[dict]:
+          links: dict, marks: dict, answers: dict, quiet_days: int, now: float, since: float,
+          deleted: list | None = None) -> list[dict]:
+    deleted = deleted or []
     """Join git, maps, sessions and your marks into one record per project."""
     registered = {entry.get("path"): pid for pid, entry in links.get("projects", {}).items() if entry.get("path")}
     alias, projects = {}, {}
@@ -808,6 +829,9 @@ def build(cfg: dict, tops: list[str], map_roots: list[str], states: dict, maps: 
                     projects[root]["days"][day]["m"] = projects[root]["days"][day].get("m", 0) + 1
             for call in data.get("calls", []):
                 call["answered"] = call["answered"] or answers.get((root, call["id"]), "")
+    for gone in deleted:
+        if gone["root"] not in projects:
+            projects[gone["root"]] = gone
     for path, pid in registered.items():
         if path not in projects and not (Path(path) / ".project-map" / "map.json").exists():
             name = Path(path).name
@@ -841,10 +865,43 @@ def build(cfg: dict, tops: list[str], map_roots: list[str], states: dict, maps: 
             p["state"] = "idle"
         p["mark"] = mark
         p["flags"] = flags_for(p, quiet_days, now)
-        if not (p["activeDays"] or p.get("map") or p.get("missing") or p.get("temp") or mark
+        if not (p["activeDays"] or p.get("map") or p.get("missing") or p.get("temp") or p.get("deleted") or mark
                 or any(f["view"] == "risk" and f["sev"] >= 2 for f in p["flags"])):
             continue
         out.append(p)
+    return out
+
+
+def vanished(db, tops: list[str], states: dict, now: float, since: float) -> list[dict]:
+    """Repos the cache knew whose folder has since been deleted, kept for the window. Their work counts as
+    lost only if no repo still here has their commits (a deleted worktree's commits live on in its repo)."""
+    seen = meta(db, "vanished", {})
+    live = set(tops)
+    kept = {}
+    elsewhere = set()
+    for state in states.values():
+        elsewhere.update((ts, subject) for ts, subject in (state.get("commits") or []))
+    out = []
+    for root, data in db.execute("SELECT root, data FROM repos"):
+        if root in live or os.path.exists(root):
+            continue
+        kept[root] = seen.get(root) or now
+        if kept[root] < since:
+            continue
+        state = json.loads(data)
+        own = [tuple(c) for c in state.get("commits") or []]
+        lost = [c for c in own if c not in elsewhere]
+        changed = (state.get("dirty") or 0) + (state.get("untracked") or 0)
+        unsafe = lost and (not state.get("remote") or state.get("unpushed"))
+        if not unsafe and not (changed and state.get("everOwn")):
+            continue  # nothing of yours went with it
+        twin = next((t for t in tops if Path(t).name == Path(root).name), None)
+        out.append({"root": root, "deleted": kept[root], "git": state, "lostCommits": len(lost) if unsafe else 0,
+                    "copyOf": twin if not unsafe else None,
+                    "lostChanges": changed if state.get("everOwn") else 0,
+                    "days": collections.defaultdict(dict), "sessions": [], "worktrees": [], "sub": False,
+                    "registered": False})
+    set_meta(db, "vanished", kept)
     return out
 
 
@@ -930,7 +987,8 @@ def scan(days: int | None = None, rescan: bool = False) -> dict:
     answers = {(row[0], row[1]): row[2] for row in db.execute("SELECT root, decision, answer FROM answers")}
     quiet = meta(db, "quiet") or {}
     quiet_days = int(quiet.get("days") or QUIET_DEFAULT)
-    projects = build(cfg, tops, map_roots, states, maps, sessions, links, marks, answers, quiet_days, now, since)
+    deleted = vanished(db, tops, states, now, since)
+    projects = build(cfg, tops, map_roots, states, maps, sessions, links, marks, answers, quiet_days, now, since, deleted)
     projects = finish(projects, cfg, links)
     model = {"generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
              "window": cfg["days"], "quietDays": quiet_days, "quiet": quiet, "redacted": False,
@@ -963,13 +1021,13 @@ def snapshot(db, projects: list[dict]) -> dict:
     words = {"uncommitted": "uncommitted work", "unpushed": "unpushed commits", "no-remote": "no remote",
              "stash": "stashed changes", "calls": "open calls", "stuck-on-you": "stuck on you",
              "session-question": "a session waiting on you", "never-committed": "never committed",
-             "missing": "map folder gone", "quiet": "gone quiet"}
+             "missing": "map folder gone", "quiet": "gone quiet", "deleted": "deleted with work in it"}
     items = []
     for p in projects:
         old = before.get(p["root"])
         now_flags = {f["code"] for f in p["flags"]}
         if not old:
-            if now_flags & {"uncommitted", "never-committed", "missing", "session-question"}:
+            if now_flags & {"uncommitted", "never-committed", "missing", "session-question", "deleted"}:
                 items.append({"kind": "new", "text": f"{p['name']}: new, " + ", ".join(words.get(c, c) for c in sorted(now_flags))})
             continue
         if old["state"] != p["state"] and p["state"] in ("quiet", "moving"):
@@ -1095,7 +1153,7 @@ def restart(pid: str, resume: bool = False, here: bool = False, show: bool = Fal
         folder, argv = last.get("cwd") or p["root"], claude_argv() + ["--resume", last["id"]]
         command = f"cd {shlex.quote(folder)} && {shlex.join(argv)}"
     else:
-        if p.get("missing") or not Path(p["root"]).is_dir():
+        if p.get("missing") or p.get("deleted") or not Path(p["root"]).is_dir():
             raise PM.Fail(f"{p['root']} no longer exists")
         text = brief(p, model)
         path = home_dir() / "briefs" / f"{p['id']}.md"
@@ -1447,6 +1505,133 @@ def publish(rotate: bool = False, dry_run: bool = False) -> dict:
     return {"url": url, "local": str(home_dir() / "supermap.html")}
 
 
+# ---------------------------------------------------------------- serve (the full page, for you alone, on your tailnet)
+
+LOCK = threading.Lock()
+
+
+def owner_logins() -> set:
+    """The tailnet owner's login (or SUPERMAP_LOGINS), the only identity tailscale serve may vouch for."""
+    env = os.environ.get("SUPERMAP_LOGINS", "")
+    if env.strip():
+        return {x.strip().lower() for x in env.split(",") if x.strip()}
+    exe = (shutil.which("tailscale") or shutil.which("tailscale", path="/usr/local/bin:/opt/homebrew/bin")
+           or "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+    try:
+        status = json.loads(subprocess.run([exe, "status", "--json"], capture_output=True, text=True, timeout=10).stdout)
+        return {status["User"][str(status["Self"]["UserID"])]["LoginName"].lower()}
+    except Exception:  # no tailscale: only direct requests from this Mac get in
+        return set()
+
+
+def allowed(headers, client_ip: str, owners: set, port: int) -> bool:
+    """You, through tailscale serve, or a direct request from this Mac. Never Funnel, another login, a tagged
+    device, or a page that rebinds its own domain onto this port."""
+    host = (headers.get("Host") or "").lower().rsplit(":", 1)[0].strip("[]")
+    if host not in ("127.0.0.1", "localhost", "::1") and not host.endswith(".ts.net"):
+        return False
+    if headers.get("Tailscale-Funnel-Request"):
+        return False
+    login = (headers.get("Tailscale-User-Login") or "").strip().lower()
+    if login:
+        return login in owners
+    return client_ip in ("127.0.0.1", "::1") and not headers.get("X-Forwarded-For")
+
+
+def act(action: str, body: dict):
+    """One button on the live page. Restart and resume open the tab on this Mac."""
+    pid = str(body.get("id") or "")
+    if action == "restart":
+        return restart(pid, resume=bool(body.get("resume")))
+    if action == "park":
+        return mark(pid, "parked", str(body.get("until") or "14d"), str(body.get("reason") or ""))
+    if action == "unpark":
+        return mark(pid, None)
+    if action == "done":
+        return mark(pid, "done")
+    if action == "answer":
+        text = str(body.get("text") or "").strip()
+        if not text:
+            raise PM.Fail("An answer needs some words")
+        return answer(pid, str(body.get("decision") or ""), text)
+    if action == "rescan":
+        model = scan()
+        return {"scanned": model["generatedAt"], "seconds": model["scan"]["seconds"]}
+    raise PM.Fail(f"Unknown action {action!r}")
+
+
+def handler_class(owners: set, token: str, port: int):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def guard(self) -> bool:
+            if allowed(self.headers, self.client_address[0], owners, port):
+                return True
+            self.send_error(403, "Only the owner of this tailnet can open the supermap")
+            return False
+
+        def reply(self, status: int, body: bytes, kind: str) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if not self.guard():
+                return
+            path = urllib.parse.urlparse(self.path).path
+            try:
+                if path in ("/", "/index.html"):
+                    with LOCK:
+                        model = latest()
+                    self.reply(200, page(dict(model, live=True, token=token)).encode(), "text/html; charset=utf-8")
+                elif path.startswith("/maps/"):
+                    with LOCK:
+                        project = find_project(latest(), urllib.parse.unquote(path.split("/")[2]))
+                    index = Path(project["root"]) / ".project-map" / "index.html"
+                    if not index.exists():
+                        raise PM.Fail("This project has no map")
+                    self.reply(200, index.read_bytes(), "text/html; charset=utf-8")
+                else:
+                    self.send_error(404)
+            except PM.Fail as problem:
+                self.reply(404, str(problem).encode(), "text/plain; charset=utf-8")
+
+        def do_POST(self):
+            if not self.guard():
+                return
+            if not secrets.compare_digest(self.headers.get("X-Supermap-Token") or "", token):
+                self.send_error(403, "Missing or wrong page token; reload the page")
+                return
+            path = urllib.parse.urlparse(self.path).path
+            action = path[len("/api/"):] if path.startswith("/api/") else ""
+            try:
+                length = min(int(self.headers.get("Content-Length") or 0), 65536)
+                body = json.loads(self.rfile.read(length) or b"{}")
+                with LOCK:
+                    result = act(action, body if isinstance(body, dict) else {})
+                self.reply(200, json.dumps({"ok": True, "result": result}).encode(), "application/json")
+            except (PM.Fail, ValueError) as problem:
+                self.reply(400, json.dumps({"ok": False, "error": str(problem)}).encode(), "application/json")
+
+        def log_message(self, fmt, *args):
+            print("%s %s" % (self.address_string(), fmt % args), flush=True)
+
+    return Handler
+
+
+def serve(port: int) -> None:
+    owners = owner_logins()
+    token = secrets.token_urlsafe(24)  # new each start; the page carries it, other sites can't read it
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), handler_class(owners, token, port))
+    print(f"supermap on 127.0.0.1:{port} for {len(owners)} tailnet owner login(s); publish it with:\n"
+          f"  tailscale serve --bg --https={port} http://127.0.0.1:{port}", flush=True)
+    server.serve_forever()
+
+
 # ---------------------------------------------------------------- summary and CLI
 
 def summary(model: dict) -> str:
@@ -1474,7 +1659,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="pm.py super", description=__doc__.splitlines()[0])
     parser.add_argument("action", nargs="?", default="scan",
                         choices=["scan", "open", "restart", "brief", "calls", "answer", "park", "unpark", "done",
-                                 "publish", "nudge", "learn", "preview"])
+                                 "publish", "nudge", "learn", "preview", "serve"])
     parser.add_argument("args", nargs="*")
     parser.add_argument("--days", type=int)
     parser.add_argument("--rescan", action="store_true", help="walk the folders and recheck every repo now")
@@ -1490,6 +1675,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--reason", default="")
     parser.add_argument("--rotate", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--port", type=int, default=8794)
     args = parser.parse_args(argv)
     need = {"restart": 1, "brief": 1, "answer": 3, "park": 1, "unpark": 1, "done": 1}.get(args.action, 0)
     if len(args.args) < need:
@@ -1545,6 +1731,9 @@ def main(argv: list[str]) -> int:
         out = nudge(latest())
     elif args.action == "learn":
         out = learn()
+    elif args.action == "serve":
+        serve(args.port)
+        return 0
     elif args.action == "preview":
         latest()
         out = PM.preview_page(home_dir() / "supermap.html")
@@ -1632,6 +1821,10 @@ details.row .card{border:0;border-radius:0 0 10px 10px;background:transparent}
 .daylist .chips em{color:var(--muted);font-style:normal}
 .empty{color:var(--muted);background:var(--panel);border:1px dashed var(--line);border-radius:12px;padding:18px;text-align:center}
 .foot{color:var(--muted);font-size:12px;margin-top:28px;border-top:1px solid var(--line);padding-top:12px}
+.answer{margin:6px 0 10px}.answer .opts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.answer button,.answer input{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:8px;padding:5px 9px}
+.answer .own{display:flex;gap:6px}.answer input{flex:1;min-width:0}.answer.sent{opacity:.55;pointer-events:none}
+.live{font-size:12px;color:var(--green);border:1px solid var(--green);border-radius:999px;padding:1px 8px;margin-left:8px;vertical-align:middle}
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;display:none;max-width:calc(100vw - 32px)}
 .more{margin-top:12px}.more summary{cursor:pointer;color:var(--muted);font-size:14px}
 @media (max-width:640px){.tile{padding:10px}.tile .n{font-size:22px}.tile .l{font-size:12px}.wide-only{display:none}h1{font-size:21px}}
@@ -1646,7 +1839,7 @@ details.row .card{border:0;border-radius:0 0 10px 10px;background:transparent}
 <script id="data" type="application/json">__DATA__</script>
 <script>
 const D=JSON.parse(document.getElementById('data').textContent);
-const P=D.projects, R=D.redacted;
+const P=D.projects, R=D.redacted, L=!!D.live;
 const $=s=>document.querySelector(s);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const now=Date.now();
@@ -1672,19 +1865,26 @@ function flagList(p,view,min){const mine=p.flags.filter(f=>(!view||f.view===view
 function mapBlock(p){const m=p.map;if(!m)return'';if(m.problem)return`<div class="block"><span class="k">Map</span>${esc(m.problem)}</div>`;
  if(R){const open=(m.calls||[]).filter(c=>!c.answered).length;const pct=m.total?Math.round(100*m.done/m.total):0;
   return `<div class="block"><span class="k">Map · drawn ${ago(m.drawn)} ${m.url?`<a href="${esc(m.url)}">open map</a>`:'(kept local)'}</span><div>${m.left} left before the next milestone${open?` · ${open} open call${open>1?'s':''}`:''}</div><div class="bar"><i style="width:${pct}%"></i></div></div>`}
- const pct=m.total?Math.round(100*m.done/m.total):0;const link=R?(m.url?`<a href="${esc(m.url)}">open map</a>`:''):(m.index?`<a href="file://${encodeURI(m.index)}">open map</a>`:(m.url?`<a href="${esc(m.url)}">open map</a>`:''));
- const calls=(m.calls||[]).map(c=>`<li>${esc(c.question)} <span class="d">${c.answered?'answered: '+esc(c.answered)+' (map not redrawn yet)':'default: '+esc(c.default)}</span></li>`).join('');
+ const pct=m.total?Math.round(100*m.done/m.total):0;const link=L&&m.index?`<a href="/maps/${encodeURIComponent(p.id)}/">open map</a>`:R?(m.url?`<a href="${esc(m.url)}">open map</a>`:''):(m.index?`<a href="file://${encodeURI(m.index)}">open map</a>`:(m.url?`<a href="${esc(m.url)}">open map</a>`:''));
+ const calls=(m.calls||[]).map(c=>`<li>${esc(c.question)} <span class="d">${c.answered?'answered: '+esc(c.answered)+' (map not redrawn yet)':'default: '+esc(c.default)}</span>${L&&!c.answered?answerForm(p,c):''}</li>`).join('');
  return `<div class="block"><span class="k">Map${m.behind?` · ${m.behind} commits behind`:''} · drawn ${ago(m.drawn)} ${link}</span>
  <div><b>${esc(m.milestone||'')}</b>: ${m.left} left</div><div class="bar" title="${m.done} of ${m.total} items across the parts"><i style="width:${pct}%"></i></div>
  <div>Next: ${esc(m.nextStep||'')}</div>${calls?`<ul class="calls">${calls}</ul>`:''}</div>`}
+function answerForm(p,c){const opts=(c.options||[]).slice(0,4).map(o=>`<button data-answer="${esc(o)}">${esc(o.length>48?o.slice(0,46)+'…':o)}${o===c.default?' (default)':''}</button>`).join('');
+ return `<form class="answer" data-id="${esc(p.id)}" data-decision="${esc(c.id)}"><div class="opts">${opts}</div><div class="own"><input name="text" placeholder="Or write your answer" aria-label="Your answer"><button type="submit">Answer</button></div></form>`}
 function sessionBlock(p){const s=(p.sessions||[])[0];if(!s||!s.end)return'';
  if(s.live)return `<div class="block"><span class="k">Session running now</span>${R?'':`<b>${esc(s.title||'untitled')}</b>`}</div>`;
  const how={question:'ended on a question to you',['mid-task']:'stopped mid-task',unanswered:'your last message went unanswered',interrupted:'you interrupted it',error:'ended on an error',done:'ended normally'}[s.ended]||'';
  return `<div class="block"><span class="k">Last session · ${ago(s.end)}</span>${R?'':`<b>${esc(s.title||'untitled')}</b> · `}${how}${!R&&s.lastWords&&s.ended!=='done'?`<div class="quote">“${esc(s.lastWords.slice(-200))}”</div>`:''}</div>`}
 function gitBlock(p){const g=p.git;if(!g||R)return'';const bits=[];if(g.branch)bits.push('on '+esc(g.branch));if(g.recent&&g.recent.length)bits.push('last: '+esc(g.recent[0]));
  return bits.length?`<div class="block"><span class="k">Git</span>${bits.join(' · ')}</div>`:''}
-function actions(p){if(R||!p.cmd)return'';const c=p.cmd;const b=[];
- if(!p.missing)b.push(`<button class="primary" data-copy="${esc(c.restart)}" title="Copies a command: paste it in a terminal to start a fresh Claude session primed with this project's restart brief">Restart fresh</button>`);
+function liveActions(p){const b=[],a=(act,label,extra,cls)=>b.push(`<button class="${cls||''}" data-act="${act}" data-id="${esc(p.id)}"${extra||''}>${label}</button>`);
+ if(!p.missing&&!p.deleted)a('restart','Restart fresh','','primary');
+ if((p.sessions||[]).length)a('restart','Resume last session',' data-resume="1"');
+ if(p.state==='parked'||p.state==='done')a('unpark','Unpark');else{a('park','Park 2 weeks');a('done','Done')}
+ return `<div class="actions">${b.join('')}</div>`}
+function actions(p){if(L)return liveActions(p);if(R||!p.cmd)return'';const c=p.cmd;const b=[];
+ if(!p.missing&&!p.deleted)b.push(`<button class="primary" data-copy="${esc(c.restart)}" title="Copies a command: paste it in a terminal to start a fresh Claude session primed with this project's restart brief">Restart fresh</button>`);
  if(c.resume)b.push(`<button data-copy="${esc(c.resume)}" title="Copies the command that resumes your last session here">Resume last session</button>`);
  if(p.state==='parked'||p.state==='done')b.push(`<button data-copy="${esc(c.unpark)}">Unpark</button>`);else{b.push(`<button data-copy="${esc(c.park)}" title="Park for two weeks: it stops counting as quiet">Park</button>`);b.push(`<button data-copy="${esc(c.done)}">Done</button>`)}
  return `<div class="actions">${b.join('')}</div>`}
@@ -1732,8 +1932,20 @@ $('#tiles').innerHTML=VIEWS.filter(v=>ALARMS.includes(v.id)).map(v=>{const n=v.l
 $('#tabs').innerHTML=VIEWS.filter(v=>!ALARMS.includes(v.id)).map(v=>`<button role="tab" data-v="${v.id}">${v.label}${v.id==='days'?'':`<span class="c">${v.list().length}</span>`}</button>`).join('');
 document.querySelectorAll('[data-v]').forEach(t=>t.onclick=()=>show(t.dataset.v));
 const ch=D.changes||{};if(ch.items&&ch.items.length)$('#changes').innerHTML=`<div class="changes"><b>Since ${dayName(ch.since)}</b><ul>${ch.items.map(i=>`<li class="${i.kind}">${esc(i.text)}</li>`).join('')}</ul></div>`;
+if(L)document.querySelector('h1').insertAdjacentHTML('beforeend','<span class="live">live</span> <button class="tile-rescan" data-act="rescan" style="font:inherit;font-size:12px;background:none;border:1px solid var(--line);color:var(--muted);border-radius:999px;padding:1px 9px;cursor:pointer">rescan</button>');
 $('#sub').textContent=`${new Date(D.generatedAt).toLocaleString(undefined,{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})} · ${P.length} projects · ${D.scan.maps} maps · ${D.scan.sessions} of your sessions in ${D.window} days · scanned ${ago(Date.parse(D.generatedAt)/1000)}`+(R?' · redacted copy: no paths, session titles or commands':'');
-$('#foot').textContent=`Scanned ${D.scan.repos} repos${D.roots.length?' under '+D.roots.join(', '):''}, ${D.scan.sessions} interactive Claude sessions and ${D.scan.maps} maps in ${D.scan.seconds} s. Gone quiet = ${D.quietDays} days`+(D.quiet&&D.quiet.recent?`: in your latest complete weeks, ${Math.round(D.quiet.resumeAtK*100)}% of your projects that went that long without a commit resumed within two weeks (${D.quiet.recent.spells} spells; ${D.quiet.spells.toLocaleString()} in all history). It drifts month to month, so the daily scan refits it`+(D.quiet.forward&&D.quiet.forward.calledQuiet?`; of ${D.quiet.forward.calledQuiet} projects called quiet two weeks ago, ${Math.round(D.quiet.forward.share*100)}% stayed quiet`:'')+'':' (default; run pm.py super learn)')+'.'+(R?'':' Buttons copy a command; paste it into a terminal.');
+$('#foot').textContent=`Scanned ${D.scan.repos} repos${D.roots.length?' under '+D.roots.join(', '):''}, ${D.scan.sessions} interactive Claude sessions and ${D.scan.maps} maps in ${D.scan.seconds} s. Gone quiet = ${D.quietDays} days`+(D.quiet&&D.quiet.recent?`: in your latest complete weeks, ${Math.round(D.quiet.resumeAtK*100)}% of your projects that went that long without a commit resumed within two weeks (${D.quiet.recent.spells} spells; ${D.quiet.spells.toLocaleString()} in all history). It drifts month to month, so the daily scan refits it`+(D.quiet.forward&&D.quiet.forward.calledQuiet?`; of ${D.quiet.forward.calledQuiet} projects called quiet two weeks ago, ${Math.round(D.quiet.forward.share*100)}% stayed quiet`:'')+'':' (default; run pm.py super learn)')+'.'+(R?'':L?' Live: buttons act on the Mac.':' Buttons copy a command; paste it into a terminal.');
+async function post(action,body){const r=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Supermap-Token':D.token},body:JSON.stringify(body)});
+ const j=await r.json().catch(()=>({ok:false,error:'HTTP '+r.status}));if(!j.ok)throw new Error(j.error||('HTTP '+r.status));return j.result}
+function toast(text){const t=$('#toast');t.textContent=text;t.style.display='block';clearTimeout(window._t);window._t=setTimeout(()=>t.style.display='none',3200)}
+document.addEventListener('click',async e=>{const b=e.target.closest('[data-act]');if(!b||!L)return;const act=b.dataset.act,id=b.dataset.id;
+ const ask={park:'Park it for two weeks? It leaves Gone quiet and Needs you.',done:'Mark it done? Only never-committed work will still show.',restart:b.dataset.resume?'Resume its last session in a new tab on the Mac?':'Open a fresh Claude in a new tab on the Mac, primed with where it stood?'}[act];
+ if(ask&&!confirm(ask))return;b.disabled=true;
+ try{const r=await post(act,{id,resume:!!b.dataset.resume});toast(act==='restart'?`Opened in ${r.opened||'a tab'} on the Mac`:act==='rescan'?'Rescanned':'Done: '+(r.mark||act));if(act!=='restart')setTimeout(()=>location.reload(),900)}
+ catch(err){toast('Failed: '+err.message)}finally{b.disabled=false}});
+document.addEventListener('click',e=>{const b=e.target.closest('.answer [data-answer]');if(!b)return;e.preventDefault();const f=b.closest('form');f.elements.text.value=b.dataset.answer;f.requestSubmit()});
+document.addEventListener('submit',async e=>{const f=e.target.closest('form.answer');if(!f)return;e.preventDefault();const text=f.elements.text.value.trim();if(!text)return toast('Write or pick an answer first');
+ try{await post('answer',{id:f.dataset.id,decision:f.dataset.decision,text});f.classList.add('sent');toast('Saved to its plan.md: '+text.slice(0,60))}catch(err){toast('Failed: '+err.message)}});
 document.addEventListener('click',e=>{const b=e.target.closest('[data-copy]');if(!b)return;const text=b.dataset.copy;
  const done=()=>{const t=$('#toast');t.textContent='Copied: '+text.slice(0,90)+(text.length>90?'…':'');t.style.display='block';clearTimeout(window._t);window._t=setTimeout(()=>t.style.display='none',2600)};
  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(text).then(done,()=>fallback(text,done));else fallback(text,done)});

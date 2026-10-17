@@ -393,3 +393,69 @@ def test_cli_routes_super_options_through_pm(world, capsys):
     assert pm.main(["super", "calls"]) == 0
     assert "open calls" in capsys.readouterr().out
     assert pm.main(["super", "restart", "nope"]) == 1
+
+
+def test_live_server_lets_only_you_in_and_its_buttons_need_the_page_token(world):
+    import http.client
+    import threading
+    sm = world["sm"]
+    sm.scan()
+    token = "page-token"
+    server = __import__("http.server").server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), sm.handler_class({"me@example.com"}, token, 0))
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def call(method, path, headers=None, body=None):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        conn.request(method, path, body=body, headers=headers or {})
+        response = conn.getresponse()
+        return response.status, response.read().decode()
+
+    try:
+        tailnet = {"Host": "mac.tail1234.ts.net:8794", "X-Forwarded-For": "100.64.0.2"}
+        status, page = call("GET", "/", dict(tailnet, **{"Tailscale-User-Login": "me@example.com"}))
+        assert status == 200 and '"live":true' in page and token in page
+        assert "safe one?" in page, "the live page is the full one"
+        assert call("GET", "/", dict(tailnet, **{"Tailscale-User-Login": "someone@else.com"}))[0] == 403
+        assert call("GET", "/", tailnet)[0] == 403, "a tagged device has no login"
+        funnel = dict(tailnet, **{"Tailscale-User-Login": "me@example.com", "Tailscale-Funnel-Request": "?1"})
+        assert call("GET", "/", funnel)[0] == 403
+        assert call("GET", "/", {"Host": "evil.example:8794"})[0] == 403, "a rebound domain"
+        assert call("GET", "/")[0] == 200, "straight from this Mac"
+        status, mapped = call("GET", "/maps/mapped/")
+        assert status == 200 and "<title>m</title>" in mapped
+        park = json.dumps({"id": "localdirty", "until": "7d"})
+        assert call("POST", "/api/park", {"Content-Type": "application/json"}, park)[0] == 403, "no token"
+        status, out = call("POST", "/api/park", {"X-Supermap-Token": token, "Content-Type": "application/json"}, park)
+        assert status == 200 and json.loads(out)["result"]["mark"] == "parked"
+        status, out = call("POST", "/api/answer", {"X-Supermap-Token": token},
+                           json.dumps({"id": "mapped", "decision": "host", "text": "Render"}))
+        assert status == 200 and "Answer: Render" in (world["mapped"] / ".project-map" / "plan.md").read_text()
+        status, out = call("POST", "/api/nope", {"X-Supermap-Token": token}, "{}")
+        assert status == 400 and "Unknown action" in out
+    finally:
+        server.shutdown()
+
+
+def test_a_deleted_repo_is_flagged_only_when_work_of_yours_went_with_it(world):
+    import shutil
+    sm = world["sm"]
+    sm.scan()
+    shutil.rmtree(world["quiet"])                              # local-only commits and uncommitted files
+    shutil.rmtree(world["dev"] / "tools" / "unpushed-wt")      # a worktree: its commits live on in its repo
+    git(world["unpushed"], "worktree", "prune")
+    shutil.rmtree(world["clone"])                              # nothing of yours in it
+    found = {p["root"]: p for p in sm.scan()["projects"]}
+    gone = found[str(world["quiet"])]
+    flag = next(f for f in gone["flags"] if f["code"] == "deleted")
+    assert flag["sev"] == 3 and "3 commits that no repo here has" in flag["text"]
+    worktree = next(f for f in found[str(world["dev"] / "tools" / "unpushed-wt")]["flags"] if f["code"] == "deleted")
+    assert "1 uncommitted file" in worktree["text"] and "commit that" not in worktree["text"], \
+        "its commits live on in its repo; only its uncommitted file went with it"
+    assert str(world["clone"]) not in found
+    with pytest.raises(world["pm"].Fail, match="no longer exists"):
+        sm.restart("localdirty", show=True)
+    sm.mark("localdirty", "done")
+    assert not [f for f in {p["root"]: p for p in sm.scan()["projects"]}.get(str(world["quiet"]), {"flags": []})["flags"]
+                if f["sev"] < 3], "done keeps only what can't be got back"

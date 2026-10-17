@@ -273,18 +273,24 @@ def index_page(maps: list[dict]) -> str:
             "(the shape project-map.taxi describes).</p></body></html>")
 
 
-def write_registry(links: dict) -> list[dict]:
+def write_registry(links: dict, shareable: bool = False) -> list[dict]:
     """Every project's latest map in one maps.json, the file project-map.taxi reads.
 
     Each map also gets its folder's name, which other tools (Claude Code, Retrace) know the project by.
+    shareable: only maps that may leave this Mac, for the hosted index (maps registered with --local stay out).
     """
-    folders = {pid: Path(e["path"]).name for pid, e in links.get("projects", {}).items() if e.get("path")}
+    projects = links.get("projects", {})
+    folders = {pid: Path(e["path"]).name for pid, e in projects.items() if e.get("path")}
     everything = []
     for path in (DATA_DIR / "maps").glob("*.json"):
+        if shareable and projects.get(path.stem, {}).get("local"):
+            continue
         m = json.loads(path.read_text())
         if folders.get(path.stem):
             m["folder"] = folders[path.stem]
         everything.append(m)
+    if shareable:
+        return sorted(everything, key=lambda m: m.get("project", ""))
     everything.sort(key=lambda m: m.get("project", ""))
     (DATA_DIR / "maps.json").write_text(json.dumps(everything, indent=1))
     (DATA_DIR / "index.html").write_text(index_page(everything))
@@ -299,6 +305,7 @@ def publish(root_arg: str, rotate: bool = False, dry_run: bool = False, local: b
     pid = map_id(root, name, links)
     entry = links.setdefault("projects", {}).setdefault(pid, {"path": str(root)})
     hosted = bool(config.get("publish", {}).get("command")) and not local
+    entry["local"] = local  # a local map never reaches the hosted index; publishing it hosted later lifts that
     result = {"id": pid, "local": str(root / ".project-map" / "index.html")}
 
     if hosted:
@@ -328,8 +335,9 @@ def publish(root_arg: str, rotate: bool = False, dry_run: bool = False, local: b
         if not index.get("token"):
             index["token"] = new_token()
         index["slug"] = f"{config['publish'].get('prefix', 'map')}s-{index['token']}"
-        folder = site_dir(index["slug"], "Project maps", index_page(everything),
-                          {"maps.json": json.dumps(everything, indent=1)})
+        shared = write_registry(links, shareable=True)
+        folder = site_dir(index["slug"], "Project maps", index_page(shared),
+                          {"maps.json": json.dumps(shared, indent=1)})
         result["index_url"] = deploy(config, folder, index["slug"], dry_run)
         result["orbital_url"] = result["index_url"].rstrip("/")  # services.conf: projectMaps.url
 
